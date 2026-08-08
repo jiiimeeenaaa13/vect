@@ -15,8 +15,8 @@ import vtracer
 from PIL import Image
 from rembg import remove as rembg_remove
 
-def quitar_fondo(ruta, umbral_bloque=25, const_c=10):
-    """
+def quitar_fondo(ruta, umbral_bloque=25, const_c=10,area_minima=3):
+    """+
     binarización adaptiva con OpenCV para quitar el fondo
     Si es fondo blanco uniforme y buena iluminación 
     """
@@ -31,19 +31,34 @@ def quitar_fondo(ruta, umbral_bloque=25, const_c=10):
 
     """ quitar puntos de ruido sueltos (OPEN) y rellenar huecos dentro del trazo (CLOSE) """
     kernel = np.ones((3,3), np.uint8)
-    masc = cv2.morphologyEx(masc, cv2.MORPH_OPEN, kernel)
     masc = cv2.morphologyEx(masc, cv2.MORPH_CLOSE, kernel)
+
+    #evitamos eliminar puntos pequeños aparentemente no importantes
+    n_etiquetas, etiquetas, stats, _ = cv2.connectedComponentsWithStats(masc, connectivity=8)
+    masc_limpia = np.zeros_like(masc)
+    for i in range(1, n_etiquetas):  # el índice 0 es el fondo, se salta
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area >= area_minima:
+            masc_limpia[etiquetas == i] = 255
+    masc = masc_limpia
 
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_rgba = np.dstack((img_rgb, masc))
     return Image.fromarray(img_rgba, mode="RGBA")
 
-def quitar_fondo_ia(ruta):
+def quitar_fondo_ia(ruta, umbral_blanco=240):
     """ quitamos el fondo usando el modelo U2-Net (rembg), en LOCAL, meojr para sombras o texturas"""
     with open(ruta, "rb") as f:
         datos_entrada = f.read()
     datos_salida = rembg_remove(datos_entrada)
-    return Image.open(io.BytesIO(datos_salida)).convert("RGBA")
+    imagen = Image.open(io.BytesIO(datos_salida)).convert("RGBA")
+
+    arr = np.array(imagen)
+    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+    es_blanco = (r >= umbral_blanco) & (g >= umbral_blanco) & (b >= umbral_blanco)
+    arr[:, :, 3] = np.where(es_blanco, 0, a)
+
+    return Image.fromarray(arr, mode="RGBA")
 
 def guardar_png_transp(imagen, ruta_salida):
     """ guarda img PIL RGBA como PNG con canal alpha"""
@@ -71,8 +86,10 @@ def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
 def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold"):
     """  quitar fondo con el metodo indicado y genera tanto PNG transparente como SVG vectorial, devuelve (ruta_png, ruta_svg """
     nombre_base = os.path.splitext(os.path.basename(ruta_entrada))[0]
-    ruta_png = os.path.join(carp_salida, f"{nombre_base}.png")
-    ruta_svg = os.path.join(carp_salida, f"{nombre_base}.svg")
+    sufijo = "" if metodo == "threshold" else f"_{metodo}"
+    nombre_salida = f"{nombre_base}{sufijo}"
+    ruta_png = os.path.join(carp_salida, f"{nombre_salida}.png")
+    ruta_svg = os.path.join(carp_salida, f"{nombre_salida}.svg")
 
     if metodo == "threshold":
         img = quitar_fondo(ruta_entrada)
