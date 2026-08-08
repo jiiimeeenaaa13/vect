@@ -43,7 +43,7 @@ def quitar_fondo_ia(ruta):
     with open(ruta, "rb") as f:
         datos_entrada = f.read()
     datos_salida = rembg_remove(datos_entrada)
-    return Image.open(io.BytesIO(datos_salida).convert("RGBA"))
+    return Image.open(io.BytesIO(datos_salida)).convert("RGBA")
 
 def guardar_png_transp(imagen, ruta_salida):
     """ guarda img PIL RGBA como PNG con canal alpha"""
@@ -53,7 +53,7 @@ def guardar_png_transp(imagen, ruta_salida):
 def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
     """ convertir PNG transparente en SVG vectorial usando vctracer"""
     os.makedirs(os.path.dirname(ruta_svg_salida), exist_ok=True)
-    vctracer.convert_image_to_svg_py(
+    vtracer.convert_image_to_svg_py(
         ruta_png_transp, ruta_svg_salida,
         colormode="color",
         hierarchical="stacked",
@@ -70,7 +70,7 @@ def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
 
 def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold"):
     """  quitar fondo con el metodo indicado y genera tanto PNG transparente como SVG vectorial, devuelve (ruta_png, ruta_svg """
-    nombre_base = os path.splitext(os.path.basename(ruta_entrada))[0]
+    nombre_base = os.path.splitext(os.path.basename(ruta_entrada))[0]
     ruta_png = os.path.join(carp_salida, f"{nombre_base}.png")
     ruta_svg = os.path.join(carp_salida, f"{nombre_base}.svg")
 
@@ -92,10 +92,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     ruta_entrada = sys.argv[1]
-    metodo = sys.argv[2] if len(sys.argv) > 2 else "threshold
+    metodo = sys.argv[2] if len(sys.argv) > 2 else "threshold"
 
     ruta_png, ruta_svg = procesar_img(ruta_entrada, "output", metodo)
     print(f"PNG  guardado en: {ruta_png}")
     print(f"SVG vectorial guardado : {ruta_svg}")
 
-    
