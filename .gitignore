@@ -4,6 +4,9 @@ venv/
 __pycache__/
 *.pyc
 
+assets/ejemplos/*
+!assets/ejemplos/.gitkeep
+
 output/
 
 build/

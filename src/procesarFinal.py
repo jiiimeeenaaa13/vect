@@ -1,9 +1,4 @@
-"""
-PIPELINE, convertir dibujo (foto/escaneo) en PNG transparente y SVG vectorial
-
-python src/procesarFinal.py <rutaImagen> [threshold/ia]
-ej: python src/procesarFinal.py assets/ejemplos/dibujo.jpg threshold
-"""
+# python src/procesarFinal.py assets/ejemplos/img3.jpg threshold
 import io
 import os
 import sys  
@@ -14,7 +9,8 @@ import vtracer
 from PIL import Image
 from rembg import remove as rembg_remove
 
-
+# evitamos que se pete la memoria si la foto es demasiado grande ej:4k
+# se calcula la escala y reduce la imagen manteniendo la proporción, si el lado mayor es menor que lado_maximo no hace nada
 def _redimensionar_cv2_si_necesario(img_bgr, lado_maximo=2000):
     alto, ancho = img_bgr.shape[:2]
     lado_mayor = max(alto, ancho)
@@ -24,9 +20,8 @@ def _redimensionar_cv2_si_necesario(img_bgr, lado_maximo=2000):
     nuevo_tamano = (int(ancho * escala), int(alto * escala))
     return cv2.resize(img_bgr, nuevo_tamano, interpolation=cv2.INTER_AREA)
 
-
+# lo mismo que la función anterior pero adaptandose a objetos de imagen de PIL, que es lo que usa rembg
 def _redimensionar_pil_si_necesario(imagen, lado_maximo=2000):
-   
     ancho, alto = imagen.size
     lado_mayor = max(ancho, alto)
     if lado_mayor <= lado_maximo:
@@ -37,16 +32,15 @@ def _redimensionar_pil_si_necesario(imagen, lado_maximo=2000):
 
 
 def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
-                  umbral_blanco=200, lado_maximo=2000):
-   
+                  umbral_blanco=200, lado_maximo=2000, tamano_cierre=3):
+
     img_bgr = cv2.imread(ruta)
     if img_bgr is None:
         raise FileNotFoundError(f"No se pudo cargar la imagen: {ruta}")
-
     img_bgr = _redimensionar_cv2_si_necesario(img_bgr, lado_maximo)
 
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-
+ 
     masc = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                   cv2.THRESH_BINARY_INV, umbral_bloque, const_c)
 
@@ -54,15 +48,16 @@ def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
     es_casi_blanco = (r >= umbral_blanco) & (g >= umbral_blanco) & (b >= umbral_blanco)
     masc[es_casi_blanco] = 0
 
-    kernel = np.ones((3, 3), np.uint8)
-    masc = cv2.morphologyEx(masc, cv2.MORPH_CLOSE, kernel)
+    kernel_cierre = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tamano_cierre, tamano_cierre))
+    masc = cv2.morphologyEx(masc, cv2.MORPH_CLOSE, kernel_cierre)
 
     n_etiquetas, etiquetas, stats, _ = cv2.connectedComponentsWithStats(masc, connectivity=8)
     areas = stats[:, cv2.CC_STAT_AREA]
     etiquetas_validas = areas >= area_minima
     etiquetas_validas[0] = False 
     masc = np.where(etiquetas_validas[etiquetas], 255, 0).astype(np.uint8)
-
+    #----------------------------------------------------------------
+    
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_rgba = np.dstack((img_rgb, masc))
     return Image.fromarray(img_rgba, mode="RGBA")
