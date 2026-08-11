@@ -32,7 +32,8 @@ def _redimensionar_pil_si_necesario(imagen, lado_maximo=2000):
 
 
 def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
-                  umbral_blanco=200, lado_maximo=2000, tamano_cierre=3):
+                  umbral_blanco=200, umbral_negro_absoluto=60,
+                  lado_maximo=2000, tamano_cierre=4):
 
     img_bgr = cv2.imread(ruta)
     if img_bgr is None:
@@ -40,9 +41,13 @@ def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
     img_bgr = _redimensionar_cv2_si_necesario(img_bgr, lado_maximo)
 
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
- 
-    masc = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                  cv2.THRESH_BINARY_INV, umbral_bloque, const_c)
+
+    masc_adaptativa = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, umbral_bloque, const_c
+    )
+    _, masc_absoluta = cv2.threshold(gray, umbral_negro_absoluto, 255, cv2.THRESH_BINARY_INV)
+    masc = cv2.bitwise_or(masc_adaptativa, masc_absoluta)
 
     b, g, r = cv2.split(img_bgr)
     es_casi_blanco = (r >= umbral_blanco) & (g >= umbral_blanco) & (b >= umbral_blanco)
@@ -54,10 +59,14 @@ def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
     n_etiquetas, etiquetas, stats, _ = cv2.connectedComponentsWithStats(masc, connectivity=8)
     areas = stats[:, cv2.CC_STAT_AREA]
     etiquetas_validas = areas >= area_minima
-    etiquetas_validas[0] = False 
+    etiquetas_validas[0] = False
     masc = np.where(etiquetas_validas[etiquetas], 255, 0).astype(np.uint8)
-    #----------------------------------------------------------------
-    
+
+    es_relleno_claro = (masc == 255) & (gray >= umbral_blanco)
+    mascara_relleno = es_relleno_claro.astype(np.uint8) * 255
+    if mascara_relleno.any():
+        img_bgr = cv2.inpaint(img_bgr, mascara_relleno, 3, cv2.INPAINT_TELEA)
+
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_rgba = np.dstack((img_rgb, masc))
     return Image.fromarray(img_rgba, mode="RGBA")
