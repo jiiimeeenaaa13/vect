@@ -238,7 +238,7 @@ class VentanaPrincipal(QMainWindow):
 
         self.combo_cierre = QComboBox()
         self.combo_cierre.addItems(self.DESCRIPCIONES_CIERRE)
-        self.combo_cierre.setCurrentIndex(1)
+        self.combo_cierre.setCurrentIndex(0)
         layout_barra.addWidget(self.combo_cierre)
 
         self.boton_procesar = QPushButton("Procesar")
@@ -305,7 +305,7 @@ class VentanaPrincipal(QMainWindow):
         return etiqueta
 
     def _actualizar_disponibilidad_opciones(self, metodo):
-        es_threshold = (metodo == "threshold")
+        es_threshold = (metodo == "Adaptativo")
         self.combo_cierre.setEnabled(es_threshold)
 
     def dragEnterEvent(self, evento):
@@ -344,8 +344,11 @@ class VentanaPrincipal(QMainWindow):
         if not self.ruta_imagen_entrada:
             return
 
-        metodo = self.combo_metodo.currentText()
-        self.etiqueta_estado.setText(f"Procesando con '{metodo}'...")
+        metodo_ui = self.combo_metodo.currentText()
+
+        metodo_backend = "threshold" if metodo_ui == "Adaptativo" else "IA"
+
+        self.etiqueta_estado.setText(f"Procesando con '{metodo_ui}'...")
         self.boton_procesar.setEnabled(False)
         self.boton_aumentar.setEnabled(False)
         self.boton_aumentar.setText("Aumentar resolución (x2)")
@@ -356,7 +359,7 @@ class VentanaPrincipal(QMainWindow):
             nivel = self.NIVELES_CIERRE[self.combo_cierre.currentIndex()]
 
             ruta_png, ruta_svg = procesar_img(
-                self.ruta_imagen_entrada, carpeta_temporal, metodo, tamano_cierre=nivel
+                self.ruta_imagen_entrada, carpeta_temporal, metodo_backend, tamano_cierre=nivel
             )
 
             self.ruta_png_resultado = ruta_png

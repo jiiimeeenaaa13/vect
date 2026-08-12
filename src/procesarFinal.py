@@ -97,21 +97,16 @@ def guardar_png_transp(imagen, ruta_salida):
 
 def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
    
-    os.makedirs(os.path.dirname(ruta_svg_salida), exist_ok=True)
-    vtracer.convert_image_to_svg_py(
-        ruta_png_transp, ruta_svg_salida,
-        colormode="color",
-        hierarchical="stacked",
-        mode="spline",
-        filter_speckle=4,
-        color_precision=6,
-        layer_difference=16,
-        corner_threshold=60,
-        length_threshold=4.0,
-        max_iterations=10,
-        splice_threshold=45,
-        path_precision=3,
-    )
+    ruta_png_abs = os.path.abspath(str(ruta_png_transp))
+    ruta_svg_abs = os.path.abspath(str(ruta_svg_salida))
+    
+    dir_salida = os.path.dirname(ruta_svg_abs)
+    if dir_salida:
+        os.makedirs(dir_salida, exist_ok=True)
+
+    # Llamada limpia EXACTA a la que funcionó en la prueba (solo origen y destino)
+    vtracer.convert_image_to_svg_py(ruta_png_abs, ruta_svg_abs)
+    
 
 
 def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold", tamano_cierre=4):
