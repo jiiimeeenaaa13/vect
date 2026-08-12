@@ -1,3 +1,4 @@
+import re
 import sys
 import shutil
 import subprocess
@@ -7,14 +8,14 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QFileDialog, QMessageBox,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QInputDialog, QDialog, QScrollArea
 )
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
-from procesarFinal import procesar_img
+from procesarFinal import procesar_img, vectorizar_svg
 
 EXTENSIONES_VALIDAS = (".jpg", ".jpeg", ".png")
 
@@ -42,6 +43,10 @@ QLabel#etiquetaSeccion { font-weight: 600; padding-top: 10px; }
 
 
 def _carpeta_inicial_selector():
+    """
+    Para Windows, intenta obtener la carpeta de usuario de WSL si se está ejecutando desde WSL.
+    Si no, devuelve la carpeta de usuario normal.
+    """
     try:
         resultado = subprocess.run(
             ["cmd.exe", "/c", "echo %USERPROFILE%"],
@@ -60,6 +65,12 @@ def _carpeta_inicial_selector():
     return str(Path.home())
 
 
+def _sanear_nombre_archivo(nombre):
+    """Quitamos caracteres no válidos para nombres de archivo en Windows."""
+    nombre = re.sub(r'[\\/:*?"<>|]', "", nombre).strip()
+    return nombre
+
+
 def _fondo_cuadros(ancho, alto, tamano_cuadro=16):
     base_size = tamano_cuadro * 2
     tile = Image.new("RGB", (base_size, base_size), "white")
@@ -68,7 +79,7 @@ def _fondo_cuadros(ancho, alto, tamano_cuadro=16):
         for x in range(base_size):
             if (x // tamano_cuadro + y // tamano_cuadro) % 2 == 0:
                 pixeles[x, y] = (204, 204, 204)
-    
+
     fondo = Image.new("RGB", (ancho, alto))
     for y in range(0, alto, base_size):
         for x in range(0, ancho, base_size):
@@ -78,7 +89,6 @@ def _fondo_cuadros(ancho, alto, tamano_cuadro=16):
 
 def _componer_sobre_cuadros(ruta_png_transparente, max_dim=1000):
     imagen = Image.open(ruta_png_transparente).convert("RGBA")
-    # Si la imagen es gigante (ej: tras hacer x2), reducimos copia en memoria SOLO para el preview
     if max(imagen.width, imagen.height) > max_dim:
         imagen.thumbnail((max_dim, max_dim), Image.LANCZOS)
     fondo = _fondo_cuadros(imagen.width, imagen.height).convert("RGBA")
@@ -99,15 +109,18 @@ class ZonaArrastre(QLabel):
 
 
 class PreviewLabel(QLabel):
-    def __init__(self, texto=""):
+    """Solo se utiliza cuando ya está el resultado, para poder hacer clic y abrir la ventana ampliada."""
+    def __init__(self, texto="", al_hacer_clic=None):
         super().__init__(texto)
-        self.setObjectName("previewBox")
+        self.setObjectName("Caja de previsualización")
         self.setAlignment(Qt.AlignCenter)
-        # Ocupar todo el espacio vertical y horizontal asignado
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(100, 100)
         self._pixmap = None
         self._texto_defecto = texto
+        self._al_hacer_clic = al_hacer_clic
+        if al_hacer_clic:
+            self.setCursor(Qt.PointingHandCursor)
 
     def set_image(self, pixmap):
         if pixmap and not pixmap.isNull():
@@ -133,11 +146,48 @@ class PreviewLabel(QLabel):
                 )
                 super().setPixmap(pixmap_escalado)
 
+    def mousePressEvent(self, evento):
+        if self._al_hacer_clic and self._pixmap:
+            self._al_hacer_clic()
+        super().mousePressEvent(evento)
+
+
+class VentanaAmpliada(QDialog):
+    """Ventan para ver el resultado más grande, con scroll si no cabe entero en pantalla."""
+    def __init__(self, ruta_png, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ampliar Resultado")
+        self.resize(850, 850)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        area_scroll = QScrollArea()
+        area_scroll.setWidgetResizable(True)
+        area_scroll.setAlignment(Qt.AlignCenter)
+        layout.addWidget(area_scroll)
+
+        compuesta = _componer_sobre_cuadros(ruta_png, max_dim=2000)
+        qimagen = ImageQt(compuesta)
+        pixmap = QPixmap.fromImage(qimagen)
+
+        etiqueta_imagen = QLabel()
+        etiqueta_imagen.setPixmap(pixmap)
+        etiqueta_imagen.setAlignment(Qt.AlignCenter)
+        area_scroll.setWidget(etiqueta_imagen)
+
 
 class VentanaPrincipal(QMainWindow):
+
+    NIVELES_CIERRE = [3, 4]
+    DESCRIPCIONES_CIERRE = [
+        "Detalle más fino",
+        "Buen detalle global, más líneas",
+    ]
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dibujo a transparente")
+        self.setWindowTitle("Dibujo → Transparente")
         self.resize(1050, 650)
         self.setAcceptDrops(True)
         self.setStyleSheet(HOJA_ESTILOS)
@@ -160,7 +210,7 @@ class VentanaPrincipal(QMainWindow):
         layout_barra.setContentsMargins(18, 20, 18, 20)
         layout_barra.setSpacing(8)
 
-        titulo = QLabel("Dibujo → Transparente")
+        titulo = QLabel("Vectorizador")
         titulo.setObjectName("tituloApp")
         titulo.setWordWrap(True)
         layout_barra.addWidget(titulo)
@@ -178,8 +228,18 @@ class VentanaPrincipal(QMainWindow):
         layout_barra.addWidget(etiqueta_opciones)
 
         self.combo_metodo = QComboBox()
-        self.combo_metodo.addItems(["threshold", "ia"])
+        self.combo_metodo.addItems(["Adaptativo", "IA"])
+        self.combo_metodo.currentTextChanged.connect(self._actualizar_disponibilidad_opciones)
         layout_barra.addWidget(self.combo_metodo)
+
+        etiqueta_nivel = QLabel("Limpieza")
+        etiqueta_nivel.setObjectName("etiquetaSeccion")
+        layout_barra.addWidget(etiqueta_nivel)
+
+        self.combo_cierre = QComboBox()
+        self.combo_cierre.addItems(self.DESCRIPCIONES_CIERRE)
+        self.combo_cierre.setCurrentIndex(1)
+        layout_barra.addWidget(self.combo_cierre)
 
         self.boton_procesar = QPushButton("Procesar")
         self.boton_procesar.clicked.connect(self.procesar)
@@ -219,7 +279,6 @@ class VentanaPrincipal(QMainWindow):
         fila_previews = QHBoxLayout()
         fila_previews.setSpacing(20)
 
-        # Columna Original
         columna_original = QVBoxLayout()
         columna_original.setSpacing(6)
         columna_original.addWidget(self._titulo_preview("Original"))
@@ -227,23 +286,27 @@ class VentanaPrincipal(QMainWindow):
         columna_original.addWidget(self.preview_original)
         fila_previews.addLayout(columna_original)
 
-        # Columna Resultado
         columna_resultado = QVBoxLayout()
         columna_resultado.setSpacing(6)
         columna_resultado.addWidget(self._titulo_preview("Resultado"))
-        self.preview_resultado = PreviewLabel("Sin resultado")
+        self.preview_resultado = PreviewLabel("Sin resultado", al_hacer_clic=self._abrir_ampliada)
         columna_resultado.addWidget(self.preview_resultado)
         fila_previews.addLayout(columna_resultado)
 
         layout_preview.addLayout(fila_previews)
         layout_raiz.addWidget(panel_preview)
 
+        self._actualizar_disponibilidad_opciones(self.combo_metodo.currentText())
+
     def _titulo_preview(self, texto):
         etiqueta = QLabel(texto)
         etiqueta.setStyleSheet("font-weight: 600; color: #444; font-size: 14px;")
-        # Fijar la altura para que el título no ocupe espacio vertical excesivo
         etiqueta.setFixedHeight(22)
         return etiqueta
+
+    def _actualizar_disponibilidad_opciones(self, metodo):
+        es_threshold = (metodo == "threshold")
+        self.combo_cierre.setEnabled(es_threshold)
 
     def dragEnterEvent(self, evento):
         if evento.mimeData().hasUrls():
@@ -267,9 +330,11 @@ class VentanaPrincipal(QMainWindow):
         self.ruta_imagen_entrada = ruta
         self.boton_procesar.setEnabled(True)
         self.boton_guardar.setEnabled(False)
-        self.boton_aumentar.setEnabled(False) 
-        
+        self.boton_aumentar.setEnabled(False)
+        self.boton_aumentar.setText("Aumentar resolución")
+
         self.preview_resultado.set_image(None)
+        self.preview_resultado.setToolTip("")
         self.etiqueta_estado.setText(f"Imagen seleccionada: {Path(ruta).name}")
 
         pixmap = QPixmap(ruta)
@@ -283,26 +348,29 @@ class VentanaPrincipal(QMainWindow):
         self.etiqueta_estado.setText(f"Procesando con '{metodo}'...")
         self.boton_procesar.setEnabled(False)
         self.boton_aumentar.setEnabled(False)
+        self.boton_aumentar.setText("Aumentar resolución (x2)")
         QApplication.processEvents()
 
         try:
             carpeta_temporal = tempfile.mkdtemp(prefix="vect_")
+            nivel = self.NIVELES_CIERRE[self.combo_cierre.currentIndex()]
 
-            # LLAMADA ÚNICA Y DIRECTA A procesarFinal.py (igual que en consola)
-            ruta_png, ruta_svg = procesar_img(self.ruta_imagen_entrada, carpeta_temporal, metodo)
+            ruta_png, ruta_svg = procesar_img(
+                self.ruta_imagen_entrada, carpeta_temporal, metodo, tamano_cierre=nivel
+            )
 
             self.ruta_png_resultado = ruta_png
             self.ruta_svg_resultado = ruta_svg
 
             compuesta = _componer_sobre_cuadros(ruta_png)
             qimagen = ImageQt(compuesta)
-            
             pixmap = QPixmap.fromImage(qimagen)
             self.preview_resultado.set_image(pixmap)
+            self.preview_resultado.setToolTip("Haz clic para ampliar")
 
             self.etiqueta_estado.setText("Listo. Puedes guardar el PNG y el SVG.")
             self.boton_guardar.setEnabled(True)
-            self.boton_aumentar.setEnabled(True) 
+            self.boton_aumentar.setEnabled(True)
 
         except Exception as error:
             QMessageBox.critical(self, "Error al procesar", str(error))
@@ -311,36 +379,60 @@ class VentanaPrincipal(QMainWindow):
         finally:
             self.boton_procesar.setEnabled(True)
 
+    def _abrir_ampliada(self):
+        if not self.ruta_png_resultado:
+            return
+        dialogo = VentanaAmpliada(self.ruta_png_resultado, self)
+        dialogo.exec()
+
     def aumentar_resolucion(self):
         if not self.ruta_png_resultado:
             return
-            
-        self.etiqueta_estado.setText("Aumentando resolución del PNG (x2)...")
+
+        self.etiqueta_estado.setText("Aumentando resolución (PNG y SVG)...")
         self.boton_aumentar.setEnabled(False)
         self.boton_guardar.setEnabled(False)
         QApplication.processEvents()
-        
+
         try:
             img = Image.open(self.ruta_png_resultado)
             nuevo_tamano = (img.width * 2, img.height * 2)
             img_ampliada = img.resize(nuevo_tamano, Image.LANCZOS)
             img_ampliada.save(self.ruta_png_resultado)
-            
-            # Vista previa optimizada
+
+            vectorizar_svg(self.ruta_png_resultado, self.ruta_svg_resultado)
+
             compuesta = _componer_sobre_cuadros(self.ruta_png_resultado)
             qimagen = ImageQt(compuesta)
             self.preview_resultado.set_image(QPixmap.fromImage(qimagen))
-            
-            self.etiqueta_estado.setText("Resolución aumentada x2. Puedes guardar los archivos.")
+
+            self.boton_aumentar.setText("Resolución ya aumentada")
+            self.etiqueta_estado.setText("Resolución x2 aplicada a PNG y SVG. Puedes guardar.")
+
         except Exception as error:
             QMessageBox.critical(self, "Error al aumentar resolución", str(error))
             self.etiqueta_estado.setText("Ocurrió un error al aumentar la resolución.")
-        finally:
             self.boton_aumentar.setEnabled(True)
+
+        finally:
             self.boton_guardar.setEnabled(True)
 
     def guardar_resultados(self):
         if not self.ruta_png_resultado:
+            return
+
+        nombre_sugerido = Path(self.ruta_imagen_entrada).stem if self.ruta_imagen_entrada else "resultado"
+        nombre_archivo, confirmado = QInputDialog.getText(
+            self, "Nombre del archivo",
+            "Nombre para guardar (sin extensión):",
+            text=nombre_sugerido
+        )
+        if not confirmado:
+            return
+
+        nombre_archivo = _sanear_nombre_archivo(nombre_archivo)
+        if not nombre_archivo:
+            QMessageBox.warning(self, "Nombre no válido", "Escribe un nombre válido para el archivo.")
             return
 
         carpeta_destino = QFileDialog.getExistingDirectory(
@@ -350,10 +442,23 @@ class VentanaPrincipal(QMainWindow):
         if not carpeta_destino:
             return
 
+        ruta_png_destino = Path(carpeta_destino) / f"{nombre_archivo}.png"
+        ruta_svg_destino = Path(carpeta_destino) / f"{nombre_archivo}.svg"
+
+        if ruta_png_destino.exists() or ruta_svg_destino.exists():
+            respuesta = QMessageBox.question(
+                self, "El archivo ya existe",
+                f"Ya existe un archivo llamado '{nombre_archivo}' en esa carpeta.\n"
+                "¿Quieres sobrescribirlo?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if respuesta != QMessageBox.Yes:
+                return
+
         try:
-            shutil.copy(self.ruta_png_resultado, carpeta_destino)
-            shutil.copy(self.ruta_svg_resultado, carpeta_destino)
-            self.etiqueta_estado.setText(f"Guardados en: {carpeta_destino}")
+            shutil.copy(self.ruta_png_resultado, ruta_png_destino)
+            shutil.copy(self.ruta_svg_resultado, ruta_svg_destino)
+            self.etiqueta_estado.setText(f"Guardado como '{nombre_archivo}' en: {carpeta_destino}")
         except Exception as error:
             QMessageBox.critical(self, "Error al guardar", str(error))
 

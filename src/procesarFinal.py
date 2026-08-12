@@ -1,4 +1,3 @@
-# python src/procesarFinal.py assets/ejemplos/img3.jpg threshold
 import io
 import os
 import sys  
@@ -115,8 +114,8 @@ def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
     )
 
 
-def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold"):
-   
+def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold", tamano_cierre=4):
+
     nombre_base = os.path.splitext(os.path.basename(ruta_entrada))[0]
     sufijo = "" if metodo == "threshold" else f"_{metodo}"
     nombre_salida = f"{nombre_base}{sufijo}"
@@ -124,7 +123,7 @@ def procesar_img(ruta_entrada, carp_salida="output", metodo="threshold"):
     ruta_svg = os.path.join(carp_salida, f"{nombre_salida}.svg")
 
     if metodo == "threshold":
-        img = quitar_fondo(ruta_entrada)
+        img = quitar_fondo(ruta_entrada, tamano_cierre=tamano_cierre)
     elif metodo == "ia":
         img = quitar_fondo_ia(ruta_entrada)
     else:
