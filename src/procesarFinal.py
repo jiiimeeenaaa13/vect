@@ -29,12 +29,20 @@ def _redimensionar_pil_si_necesario(imagen, lado_maximo=2000):
     nuevo_tamano = (int(ancho * escala), int(alto * escala))
     return imagen.resize(nuevo_tamano, Image.LANCZOS)
 
+def _leer_imagen_cv2(ruta):
+    
+    try:
+        with Image.open(ruta) as img:
+            img_rgb = img.convert("RGB")
+            return cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
 
 def quitar_fondo(ruta, umbral_bloque=25, const_c=10, area_minima=3,
                   umbral_blanco=200, umbral_negro_absoluto=60,
                   lado_maximo=2000, tamano_cierre=4):
 
-    img_bgr = cv2.imread(ruta)
+    img_bgr = _leer_imagen_cv2(ruta)
     if img_bgr is None:
         raise FileNotFoundError(f"No se pudo cargar la imagen: {ruta}")
     img_bgr = _redimensionar_cv2_si_necesario(img_bgr, lado_maximo)
@@ -104,7 +112,6 @@ def vectorizar_svg(ruta_png_transp, ruta_svg_salida):
     if dir_salida:
         os.makedirs(dir_salida, exist_ok=True)
 
-    # Llamada limpia EXACTA a la que funcionó en la prueba (solo origen y destino)
     vtracer.convert_image_to_svg_py(ruta_png_abs, ruta_svg_abs)
     
 

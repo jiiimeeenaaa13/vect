@@ -1,7 +1,14 @@
-import re
 import sys
+import os
+import multiprocessing
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -11,7 +18,7 @@ from PySide6.QtWidgets import (
     QFrame, QSizePolicy, QInputDialog, QDialog, QScrollArea
 )
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
@@ -41,34 +48,33 @@ QLabel#etiquetaEstado { color: #555; padding-top: 4px; }
 QLabel#etiquetaSeccion { font-weight: 600; padding-top: 10px; }
 """
 
+class HiloProcesamiento(QThread):
+    finalizado = Signal(str, str)
+    error = Signal(str)
+
+    def __init__(self, ruta_entrada, carpeta_salida, metodo, nivel_cierre):
+        super().__init__()
+        self.ruta_entrada = ruta_entrada
+        self.carpeta_salida = carpeta_salida
+        self.metodo = metodo
+        self.nivel_cierre = nivel_cierre
+
+    def run(self):
+        try:
+            ruta_png, ruta_svg = procesar_img(
+                self.ruta_entrada, self.carpeta_salida, self.metodo, tamano_cierre=self.nivel_cierre
+            )
+            self.finalizado.emit(ruta_png, ruta_svg)
+        except Exception as e:
+            self.error.emit(str(e))
+
 
 def _carpeta_inicial_selector():
-    """
-    Para Windows, intenta obtener la carpeta de usuario de WSL si se está ejecutando desde WSL.
-    Si no, devuelve la carpeta de usuario normal.
-    """
-    try:
-        resultado = subprocess.run(
-            ["cmd.exe", "/c", "echo %USERPROFILE%"],
-            capture_output=True, text=True, timeout=3
-        )
-        ruta_windows = resultado.stdout.strip()
-        if ruta_windows:
-            conversion = subprocess.run(
-                ["wslpath", ruta_windows], capture_output=True, text=True, timeout=3
-            )
-            ruta_wsl = conversion.stdout.strip()
-            if ruta_wsl and Path(ruta_wsl).exists():
-                return ruta_wsl
-    except Exception:
-        pass
     return str(Path.home())
 
 
 def _sanear_nombre_archivo(nombre):
-    """Quitamos caracteres no válidos para nombres de archivo en Windows."""
-    nombre = re.sub(r'[\\/:*?"<>|]', "", nombre).strip()
-    return nombre
+    return re.sub(r'[\\/:*?"<>|]', "", nombre).strip()
 
 
 def _fondo_cuadros(ancho, alto, tamano_cuadro=16):
@@ -109,7 +115,6 @@ class ZonaArrastre(QLabel):
 
 
 class PreviewLabel(QLabel):
-    """Solo se utiliza cuando ya está el resultado, para poder hacer clic y abrir la ventana ampliada."""
     def __init__(self, texto="", al_hacer_clic=None):
         super().__init__(texto)
         self.setObjectName("Caja de previsualización")
@@ -153,7 +158,6 @@ class PreviewLabel(QLabel):
 
 
 class VentanaAmpliada(QDialog):
-    """Ventan para ver el resultado más grande, con scroll si no cabe entero en pantalla."""
     def __init__(self, ruta_png, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ampliar Resultado")
@@ -178,12 +182,8 @@ class VentanaAmpliada(QDialog):
 
 
 class VentanaPrincipal(QMainWindow):
-
     NIVELES_CIERRE = [3, 4]
-    DESCRIPCIONES_CIERRE = [
-        "Detalle más fino",
-        "Buen detalle global, más líneas",
-    ]
+    DESCRIPCIONES_CIERRE = ["Detalle más fino", "Buen detalle global, más líneas"]
 
     def __init__(self):
         super().__init__()
@@ -196,6 +196,7 @@ class VentanaPrincipal(QMainWindow):
         self.ruta_png_resultado = None
         self.ruta_svg_resultado = None
         self.carpeta_inicial = _carpeta_inicial_selector()
+        self.hilo_procesamiento = None
 
         contenedor = QWidget()
         self.setCentralWidget(contenedor)
@@ -212,10 +213,9 @@ class VentanaPrincipal(QMainWindow):
 
         titulo = QLabel("Vectorizador")
         titulo.setObjectName("tituloApp")
-        titulo.setWordWrap(True)
         layout_barra.addWidget(titulo)
 
-        subtitulo = QLabel("Convierte tu dibujo escaneado en PNG y SVG con fondo transparente.")
+        subtitulo = QLabel("Convierte tu dibujo escaneado en PNG y SVG transparente.")
         subtitulo.setObjectName("subtitulo")
         subtitulo.setWordWrap(True)
         layout_barra.addWidget(subtitulo)
@@ -228,7 +228,7 @@ class VentanaPrincipal(QMainWindow):
         layout_barra.addWidget(etiqueta_opciones)
 
         self.combo_metodo = QComboBox()
-        self.combo_metodo.addItems(["Adaptativo", "IA"])
+        self.combo_metodo.addItems(["Adaptativo", "ia"])
         self.combo_metodo.currentTextChanged.connect(self._actualizar_disponibilidad_opciones)
         layout_barra.addWidget(self.combo_metodo)
 
@@ -280,15 +280,13 @@ class VentanaPrincipal(QMainWindow):
         fila_previews.setSpacing(20)
 
         columna_original = QVBoxLayout()
-        columna_original.setSpacing(6)
-        columna_original.addWidget(self._titulo_preview("Original"))
+        columna_original.addWidget(QLabel("Original"))
         self.preview_original = PreviewLabel("Sin imagen")
         columna_original.addWidget(self.preview_original)
         fila_previews.addLayout(columna_original)
 
         columna_resultado = QVBoxLayout()
-        columna_resultado.setSpacing(6)
-        columna_resultado.addWidget(self._titulo_preview("Resultado"))
+        columna_resultado.addWidget(QLabel("Resultado"))
         self.preview_resultado = PreviewLabel("Sin resultado", al_hacer_clic=self._abrir_ampliada)
         columna_resultado.addWidget(self.preview_resultado)
         fila_previews.addLayout(columna_resultado)
@@ -298,15 +296,8 @@ class VentanaPrincipal(QMainWindow):
 
         self._actualizar_disponibilidad_opciones(self.combo_metodo.currentText())
 
-    def _titulo_preview(self, texto):
-        etiqueta = QLabel(texto)
-        etiqueta.setStyleSheet("font-weight: 600; color: #444; font-size: 14px;")
-        etiqueta.setFixedHeight(22)
-        return etiqueta
-
     def _actualizar_disponibilidad_opciones(self, metodo):
-        es_threshold = (metodo == "Adaptativo")
-        self.combo_cierre.setEnabled(es_threshold)
+        self.combo_cierre.setEnabled(metodo == "Adaptativo")
 
     def dragEnterEvent(self, evento):
         if evento.mimeData().hasUrls():
@@ -320,8 +311,7 @@ class VentanaPrincipal(QMainWindow):
 
     def seleccionar_imagen(self):
         ruta, _ = QFileDialog.getOpenFileName(
-            self, "Selecciona un dibujo", self.carpeta_inicial,
-            "Imágenes (*.jpg *.jpeg *.png)"
+            self, "Selecciona un dibujo", self.carpeta_inicial, "Imágenes (*.jpg *.jpeg *.png)"
         )
         if ruta:
             self._cargar_imagen(ruta)
@@ -331,142 +321,84 @@ class VentanaPrincipal(QMainWindow):
         self.boton_procesar.setEnabled(True)
         self.boton_guardar.setEnabled(False)
         self.boton_aumentar.setEnabled(False)
-        self.boton_aumentar.setText("Aumentar resolución")
-
         self.preview_resultado.set_image(None)
-        self.preview_resultado.setToolTip("")
         self.etiqueta_estado.setText(f"Imagen seleccionada: {Path(ruta).name}")
-
-        pixmap = QPixmap(ruta)
-        self.preview_original.set_image(pixmap)
+        self.preview_original.set_image(QPixmap(ruta))
 
     def procesar(self):
         if not self.ruta_imagen_entrada:
             return
 
         metodo_ui = self.combo_metodo.currentText()
+        metodo_backend = "threshold" if metodo_ui == "Adaptativo" else "ia"
 
-        metodo_backend = "threshold" if metodo_ui == "Adaptativo" else "IA"
-
-        self.etiqueta_estado.setText(f"Procesando con '{metodo_ui}'...")
+        self.etiqueta_estado.setText(f"Procesando con '{metodo_ui}' (Esto puede tomar segundos)...")
         self.boton_procesar.setEnabled(False)
-        self.boton_aumentar.setEnabled(False)
-        self.boton_aumentar.setText("Aumentar resolución (x2)")
-        QApplication.processEvents()
+        self.boton_guardar.setEnabled(False)
 
-        try:
-            carpeta_temporal = tempfile.mkdtemp(prefix="vect_")
-            nivel = self.NIVELES_CIERRE[self.combo_cierre.currentIndex()]
+        carpeta_temporal = tempfile.mkdtemp(prefix="vect_")
+        nivel = self.NIVELES_CIERRE[self.combo_cierre.currentIndex()]
 
-            ruta_png, ruta_svg = procesar_img(
-                self.ruta_imagen_entrada, carpeta_temporal, metodo_backend, tamano_cierre=nivel
-            )
+        self.hilo_procesamiento = HiloProcesamiento(
+            self.ruta_imagen_entrada, carpeta_temporal, metodo_backend, nivel
+        )
+        self.hilo_procesamiento.finalizado.connect(self._al_finalizar_procesamiento)
+        self.hilo_procesamiento.error.connect(self._al_error_procesamiento)
+        self.hilo_procesamiento.start()
 
-            self.ruta_png_resultado = ruta_png
-            self.ruta_svg_resultado = ruta_svg
+    def _al_finalizar_procesamiento(self, ruta_png, ruta_svg):
+        self.ruta_png_resultado = ruta_png
+        self.ruta_svg_resultado = ruta_svg
 
-            compuesta = _componer_sobre_cuadros(ruta_png)
-            qimagen = ImageQt(compuesta)
-            pixmap = QPixmap.fromImage(qimagen)
-            self.preview_resultado.set_image(pixmap)
-            self.preview_resultado.setToolTip("Haz clic para ampliar")
+        compuesta = _componer_sobre_cuadros(ruta_png)
+        qimagen = ImageQt(compuesta)
+        self.preview_resultado.set_image(QPixmap.fromImage(qimagen))
 
-            self.etiqueta_estado.setText("Listo. Puedes guardar el PNG y el SVG.")
-            self.boton_guardar.setEnabled(True)
-            self.boton_aumentar.setEnabled(True)
+        self.etiqueta_estado.setText("Listo. Puedes guardar el PNG y el SVG.")
+        self.boton_procesar.setEnabled(True)
+        self.boton_guardar.setEnabled(True)
+        self.boton_aumentar.setEnabled(True)
 
-        except Exception as error:
-            QMessageBox.critical(self, "Error al procesar", str(error))
-            self.etiqueta_estado.setText("Ha ocurrido un error. Inténtalo de nuevo.")
-
-        finally:
-            self.boton_procesar.setEnabled(True)
+    def _al_error_procesamiento(self, mensaje_error):
+        QMessageBox.critical(self, "Error al procesar", mensaje_error)
+        self.etiqueta_estado.setText("Ha ocurrido un error. Inténtalo de nuevo.")
+        self.boton_procesar.setEnabled(True)
 
     def _abrir_ampliada(self):
-        if not self.ruta_png_resultado:
-            return
-        dialogo = VentanaAmpliada(self.ruta_png_resultado, self)
-        dialogo.exec()
+        if self.ruta_png_resultado:
+            VentanaAmpliada(self.ruta_png_resultado, self).exec()
 
     def aumentar_resolucion(self):
         if not self.ruta_png_resultado:
             return
-
-        self.etiqueta_estado.setText("Aumentando resolución (PNG y SVG)...")
-        self.boton_aumentar.setEnabled(False)
-        self.boton_guardar.setEnabled(False)
-        QApplication.processEvents()
-
         try:
             img = Image.open(self.ruta_png_resultado)
-            nuevo_tamano = (img.width * 2, img.height * 2)
-            img_ampliada = img.resize(nuevo_tamano, Image.LANCZOS)
+            img_ampliada = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
             img_ampliada.save(self.ruta_png_resultado)
-
             vectorizar_svg(self.ruta_png_resultado, self.ruta_svg_resultado)
 
             compuesta = _componer_sobre_cuadros(self.ruta_png_resultado)
-            qimagen = ImageQt(compuesta)
-            self.preview_resultado.set_image(QPixmap.fromImage(qimagen))
-
-            self.boton_aumentar.setText("Resolución ya aumentada")
-            self.etiqueta_estado.setText("Resolución x2 aplicada a PNG y SVG. Puedes guardar.")
-
+            self.preview_resultado.set_image(QPixmap.fromImage(ImageQt(compuesta)))
+            self.etiqueta_estado.setText("Resolución x2 aplicada.")
         except Exception as error:
-            QMessageBox.critical(self, "Error al aumentar resolución", str(error))
-            self.etiqueta_estado.setText("Ocurrió un error al aumentar la resolución.")
-            self.boton_aumentar.setEnabled(True)
-
-        finally:
-            self.boton_guardar.setEnabled(True)
+            QMessageBox.critical(self, "Error", str(error))
 
     def guardar_resultados(self):
         if not self.ruta_png_resultado:
             return
-
-        nombre_sugerido = Path(self.ruta_imagen_entrada).stem if self.ruta_imagen_entrada else "resultado"
-        nombre_archivo, confirmado = QInputDialog.getText(
-            self, "Nombre del archivo",
-            "Nombre para guardar (sin extensión):",
-            text=nombre_sugerido
-        )
-        if not confirmado:
-            return
-
-        nombre_archivo = _sanear_nombre_archivo(nombre_archivo)
-        if not nombre_archivo:
-            QMessageBox.warning(self, "Nombre no válido", "Escribe un nombre válido para el archivo.")
-            return
-
-        carpeta_destino = QFileDialog.getExistingDirectory(
-            self, "Elige dónde guardar el PNG y el SVG",
-            self.carpeta_inicial
-        )
-        if not carpeta_destino:
-            return
-
-        ruta_png_destino = Path(carpeta_destino) / f"{nombre_archivo}.png"
-        ruta_svg_destino = Path(carpeta_destino) / f"{nombre_archivo}.svg"
-
-        if ruta_png_destino.exists() or ruta_svg_destino.exists():
-            respuesta = QMessageBox.question(
-                self, "El archivo ya existe",
-                f"Ya existe un archivo llamado '{nombre_archivo}' en esa carpeta.\n"
-                "¿Quieres sobrescribirlo?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if respuesta != QMessageBox.Yes:
-                return
-
-        try:
-            shutil.copy(self.ruta_png_resultado, ruta_png_destino)
-            shutil.copy(self.ruta_svg_resultado, ruta_svg_destino)
-            self.etiqueta_estado.setText(f"Guardado como '{nombre_archivo}' en: {carpeta_destino}")
-        except Exception as error:
-            QMessageBox.critical(self, "Error al guardar", str(error))
+        nombre_sugerido = Path(self.ruta_imagen_entrada).stem
+        nombre_archivo, ok = QInputDialog.getText(self, "Guardar", "Nombre (sin extensión):", text=nombre_sugerido)
+        if ok and nombre_archivo:
+            carpeta = QFileDialog.getExistingDirectory(self, "Guardar en...", self.carpeta_inicial)
+            if carpeta:
+                shutil.copy(self.ruta_png_resultado, Path(carpeta) / f"{nombre_archivo}.png")
+                shutil.copy(self.ruta_svg_resultado, Path(carpeta) / f"{nombre_archivo}.svg")
+                self.etiqueta_estado.setText(f"Guardado en {carpeta}")
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    
     app = QApplication(sys.argv)
     ventana = VentanaPrincipal()
     ventana.show()
